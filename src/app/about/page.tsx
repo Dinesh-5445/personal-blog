@@ -1,6 +1,6 @@
 export const metadata = {
   title: "About | Dinesh Palavalasa",
-  description: "About the journey of learning in public.",
+  description: "Third-year engineering student building production-quality AI and systems projects.",
 };
 
 export default function AboutPage() {
@@ -9,18 +9,31 @@ export default function AboutPage() {
       <div className="prose-header">
         <h1>About</h1>
       </div>
-      
+
       <p>
-        I am Dinesh Palavalasa, a student documenting an engineering journey in public. 
-        My primary focus is on <strong>Artificial Intelligence</strong>, <strong>Machine Learning</strong>, and building a strong foundation in <strong>Systems Design</strong> and algorithms.
-      </p>
-      
-      <p>
-        This blog serves as an authentic archive. It doesn't hide the confusion, the repeated changes in direction, or the failures. Instead, it captures the gradual process of finding clarity through long-term consistency.
+        I am Dinesh Palavalasa, a third-year engineering student with a focused interest in{" "}
+        <strong>Artificial Intelligence</strong>, <strong>Reinforcement Learning</strong>,{" "}
+        <strong>Multi-Agent Systems</strong>, <strong>Computer Vision</strong>, and{" "}
+        <strong>Distributed Systems</strong>.
       </p>
 
       <p>
-        The goal isn't to appear perfect. The goal is to show up every day.
+        My approach to engineering is deliberate. I prefer building systems I fully understand
+        over assembling quick demos from tutorials. Most of the projects I work on start from
+        the fundamentals—reading papers, studying implementations, and building upward from
+        there.
+      </p>
+
+      <p>
+        This blog is a technical archive of that process. It documents the architecture
+        decisions, engineering trade-offs, and lessons learned across projects that range from
+        RL-based traffic optimization to production AI pipelines. I also contribute to open
+        source where I can, and I try to write clearly about what I build.
+      </p>
+
+      <p>
+        I am always open to collaborating on open-source projects, research ideas, and
+        engineering discussions.
       </p>
     </div>
   );

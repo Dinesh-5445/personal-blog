@@ -29,30 +29,6 @@ export default function Home() {
             </Link>
           ))}
 
-          {/* Placeholders */}
-          <div className="blog-card disabled">
-            <div className="blog-meta">
-              <span>Upcoming</span>
-              <span className="blog-status" style={{ border: "none" }}>Coming Soon</span>
-            </div>
-            <h3 className="blog-title">50 Days of Consistency</h3>
-          </div>
-
-          <div className="blog-card disabled">
-            <div className="blog-meta">
-              <span>Upcoming</span>
-              <span className="blog-status" style={{ border: "none" }}>Coming Soon</span>
-            </div>
-            <h3 className="blog-title">100 Days of DSA</h3>
-          </div>
-
-          <div className="blog-card disabled">
-            <div className="blog-meta">
-              <span>Upcoming</span>
-              <span className="blog-status" style={{ border: "none" }}>Coming Soon</span>
-            </div>
-            <h3 className="blog-title">My First ML Project</h3>
-          </div>
         </div>
       </section>
     </div>

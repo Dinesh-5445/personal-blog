@@ -1,0 +1,120 @@
+---
+title: "Engineering a Traffic Signal Optimizer with PPO and SUMO"
+date: "2026-07-11"
+status: "Published"
+description: "Building a production-quality centralized Proximal Policy Optimization (PPO) baseline for intelligent traffic signal control using Eclipse SUMO and Stable-Baselines3."
+---
+
+*Building a production-quality centralized Proximal Policy Optimization (PPO) baseline for intelligent traffic signal control using Eclipse SUMO and Stable-Baselines3.*
+
+## Introduction
+
+Urban traffic management is fundamentally a complex systems problem. Despite decades of infrastructure investment, many modern cities still rely on static, fixed-time traffic signal schedules or rudimentary sensor-based actuated control. These legacy systems are fragile; they are optimized for historical averages and struggle to adapt when real-time demand deviates from expectations—such as during accidents, severe weather, or special events.
+
+The resulting inefficiencies manifest as compounding congestion, increased vehicle emissions, and lost economic productivity. To build truly responsive cities, we need control systems capable of learning dynamic traffic patterns and adapting their policies in real-time.
+
+Reinforcement Learning (RL) has emerged as a compelling approach for this challenge. By framing traffic signal control as a Markov Decision Process (MDP), an agent can learn optimal signal phasing strategies through continuous interaction with the environment. However, deploying RL in this domain requires more than just instantiating a model. It demands rigorous environment design, reliable simulation infrastructure, and robust engineering practices.
+
+This article details the architecture and engineering decisions behind building a strong, centralized RL baseline for traffic signal optimization using Proximal Policy Optimization (PPO), Eclipse SUMO, and Gymnasium.
+
+## Understanding the Problem
+
+Traffic networks are notoriously difficult to control optimally because they exhibit non-stationary dynamics and high degrees of stochasticity.
+
+When a traffic signal turns green, it relieves localized congestion but often propagates a platoon of vehicles downstream, potentially overwhelming the next intersection. This creates a delayed, cascading effect where localized, greedy decisions can severely degrade the global network throughput. 
+
+Furthermore, urban traffic is characterized by dynamic demand. Volume fluctuates throughout the day, altering the optimal state transitions. Scaling control algorithms across dozens or hundreds of intersections rapidly introduces challenges related to the curse of dimensionality, both in state observation and action selection. To solve this, an intelligent controller must constantly observe the state of the intersection, select an optimal phase extension or switch, and receive a delayed reward signal evaluating that decision.
+
+## Why SUMO?
+
+Before an RL agent can learn, it needs an environment. Training a non-deterministic agent directly on real-world infrastructure is both dangerous and impractical. We require a simulation engine that accurately models vehicle dynamics, road networks, and signal logic while exposing an API for programmatic control.
+
+For this project, we selected **Eclipse SUMO (Simulation of Urban MObility)**. 
+
+SUMO is a highly optimized, open-source microscopic traffic simulator. By modeling the continuous movement of every individual vehicle—rather than treating traffic as fluid dynamics—SUMO provides the granularity essential for accurately calculating precise metrics like individual vehicle delay and queue lengths at a stop line. 
+
+Crucially, SUMO provides the Traffic Control Interface (TraCI) and its C++ wrapped counterpart `libsumo`. This interface allows external scripts to pause the simulation, extract state information, inject new signal commands, and step the physics engine forward.
+
+## System Architecture
+
+To build a reliable and scalable traffic optimizer, we needed a pipeline that strictly separated the traffic simulation, environment wrapper, and learning algorithm. This modularity ensures determinism and creates a clean engineering boundary. The illustration below details the complete vertical stack of our traffic signal optimization system.
+<figure className="blog-figure">
+  <img src="/images/Gemini_Generated_Image_sfixb2sfixb2sfix-photounmark.png" alt="Traffic Signal Optimization System Architecture" />
+  <figcaption>Figure 1. Overall system architecture.</figcaption>
+</figure>
+
+As shown in the architecture, real-world road network data feeds directly into Eclipse SUMO. The simulator's state is exposed through the TraCI/`libsumo` interface, which is then wrapped by our Gymnasium environment. This standardization decouples the simulator logic from the learning algorithm, allowing Stable-Baselines3 to seamlessly ingest observations and push actions (signal phases) back down the stack to update the traffic state.
+
+## Turning SUMO into a Learning Environment
+
+Bridging the gap between SUMO's continuous physics simulation and our RL algorithms required translating traffic flow into the standard Gymnasium interface. We developed `traffic_env.py` to implement the core RL components:
+
+1. **Observation Space**: The agent needs to perceive the traffic state. We designed a normalized observation vector capturing the density (number of vehicles) and queue length (number of halted vehicles) for each incoming lane. Normalization ensures the neural network receives inputs scaled between 0 and 1, preventing unstable gradients.
+2. **Action Space**: We modeled the action space as a `Discrete(4)` space, representing four possible signal phases (e.g., North-South Green, East-West Green, plus protected left turns). 
+3. **Reward Function**: Designing the reward function is arguably the most difficult aspect of RL. We opted to penalize the total waiting time of all vehicles at the intersection. By maximizing this reward (minimizing the negative value), the agent learns to minimize overall delays.
+
+This continuous cycle of observing, acting, and receiving rewards is the engine of the learning process. The following diagram illustrates exactly how our PPO agent interacts with the SUMO environment during training.
+<figure className="blog-figure">
+  <img src="/images/Gemini_Generated_Image_1ks4fz1ks4fz1ks4-photounmark.png" alt="How the PPO Agent Learns" />
+  <figcaption>Figure 2. PPO interaction loop.</figcaption>
+</figure>
+
+In this cycle, the SUMO simulation steps forward, generating new traffic states. The agent observes the current traffic, the reward calculation evaluates the previous action's effectiveness, and the policy updates iteratively. Over millions of timesteps, this loop forces the neural network to discover phasing strategies that maximize throughput.
+
+## Choosing PPO as the First Baseline
+
+For our centralized baseline, we selected **Proximal Policy Optimization (PPO)**. 
+
+While deep Q-learning approaches like DQN are popular, PPO has become the default algorithm for many continuous and discrete control tasks. PPO is an actor-critic algorithm that optimizes the policy directly. Its primary advantage is stability. 
+
+By utilizing a clipped objective function, PPO ensures that policy updates do not deviate too wildly from the previous policy. In traffic control, a bad policy update can lead to catastrophic gridlock, effectively ruining the simulation episode. Therefore, stable, monotonic improvement is vastly more valuable than sample efficiency. Furthermore, PPO handles continuous state spaces gracefully and scales well across distributed simulation instances if needed.
+
+## Building a Reproducible RL Pipeline
+
+A common pitfall in academic RL research is producing code that runs exactly once on the author's machine. To ensure this project serves as a robust baseline for future development, we structured the repository for maintainability and reproducibility.
+
+- `env/`: Contains the Gymnasium wrapper and SUMO network definitions. Isolating the environment logic ensures it can be tested independently of the learning algorithms.
+- `training/`: Houses the entry points for the PPO agent, hyperparameter configurations, and callbacks.
+- `results/` & `experiments/`: Dedicated directories for TensorBoard logs, serialized model weights, and performance plots. 
+- `networks/`: Stores the XML definitions for the road geometry, traffic light logic, and vehicle routing.
+
+This organization allows us to cleanly version control our environment definitions separately from our trained model weights, preventing the technical debt often associated with complex scripting pipelines.
+
+During training, we log metrics extensively to TensorBoard: cumulative reward, episode length, and average intersection delay. Checkpointing is implemented to automatically save the policy weights whenever a new historical maximum evaluation reward is achieved.
+
+Finally, we prioritize behavior verification. Because an RL agent can find mathematical "hacks" to the reward function that are completely impractical in reality, watching the trained policy execute in the `sumo-gui` is a mandatory validation step.
+
+## Engineering Challenges
+
+Building this baseline surfaced several unique engineering hurdles.
+
+> [!NOTE]
+> **Credit Assignment:** In traffic networks, the reward is often delayed. A poor phase decision made at minute 5 might only result in gridlock at minute 10. Properly tuning the discount factor and utilizing generalized advantage estimation (GAE) in PPO helped mitigate this delayed feedback.
+
+> [!NOTE]
+> **Phase Encoding:** Traffic lights operate on sequences (Green $\rightarrow$ Yellow $\rightarrow$ Red). We had to carefully engineer the environment step function to insert mandatory yellow clearance phases automatically when the agent decides to switch phases, preventing unrealistic instant transitions.
+
+> [!NOTE]
+> **Simulation Speed:** Communicating with SUMO via TraCI over a TCP socket introduces significant overhead. Moving to `libsumo`, a direct C++ binding, drastically reduced the wall-clock time required for millions of timesteps of training.
+
+## Results and Lessons Learned
+
+Version 1 of this project achieved its primary goal: establishing a production-quality, centralized RL baseline for traffic signal control. The trained PPO agent successfully converged, demonstrating a measurable reduction in cumulative vehicle delay compared to a static, fixed-time baseline across a simulated 3x3 grid network. 
+
+Treating the simulator as a first-class engineering component, rather than a black box, proved critical. Understanding SUMO's internal lane indexing and routing mechanics saved weeks of debugging bizarre agent behaviors. Additionally, we found that simple, dense rewards based strictly on wait time were far more resilient than complex penalties for phase switching frequency.
+
+Most importantly, we proved out the infrastructure. The pipeline is reproducible, deterministic, and highly observable through TensorBoard integration.
+
+## Looking Ahead
+
+While the centralized PPO agent performs well, scaling a single monolithic neural network to control hundreds of intersections across an entire city is computationally intractable and structurally fragile. 
+
+Our current implementation is only the foundation. The diagram below outlines the strategic roadmap for the evolution of this system.
+<figure className="blog-figure">
+  <img src="/images/Gemini_Generated_Image_22r22n22r22n22r2-photounmark.png" alt="Project Roadmap: Versions 1, 2, and 3" />
+  <figcaption>Figure 3. Project evolution roadmap.</figcaption>
+</figure>
+
+As we move into Version 2, the project will transition to **Multi-Agent Reinforcement Learning (MARL)**. By decentralizing the control policy, each intersection will act as an independent agent. We plan to explore Graph Neural Networks (GNNs) to allow neighboring intersections to communicate state and intent, enabling scalable, cooperative traffic intelligence without a centralized bottleneck. 
+
+The baseline is built. The next step is scale.
