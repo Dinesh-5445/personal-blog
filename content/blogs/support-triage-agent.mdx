@@ -1,0 +1,132 @@
+---
+title: "Building a Support Triage System That Knows When Not to Answer"
+date: "2026-09-02"
+status: "Published"
+description: "Engineering a deterministic NLP-based support ticket triage system that prioritizes safety, explainability, and evidence validation over free-form generation."
+---
+
+*Engineering a deterministic NLP-based support ticket triage system that prioritizes safety, explainability, and evidence validation over free-form generation.*
+
+## Introduction
+
+What if the safest answer a support agent can give is no answer at all?
+
+When we think about automating customer support, the instinct is often to maximize the number of tickets a system can automatically resolve. We reach for the most powerful generative models and try to get them to output an answer for every user request. But in real-world support environments, a ticket isn't always a simple FAQ lookup. 
+
+A support ticket can involve sensitive billing disputes, potential security breaches, account recovery requests, or ambiguous multi-intent queries. In these scenarios, automatically generating answers can create significant risks—ranging from unsupported claims to hallucinated policies. Automation is not just about producing more answers; it is about producing answers *only* when the available evidence is undeniably sufficient. 
+
+This article details the engineering decisions behind building a deterministic NLP-based Support Triage Agent—a system designed across three domains (HackerRank, Claude, and Visa) that treats the decision to escalate as a core safety feature, rather than a failure state.
+
+## Understanding the Problem
+
+Why is automatic support answering so difficult? The challenge is not language generation. Modern LLMs are exceptional at generating plausible-sounding text. The difficult problem is deciding whether the system should answer the ticket in the first place.
+
+When a user submits a support request involving fraud or a service outage, an automated system that blindly generates a response can easily provide incorrect, unhelpful, or legally risky information. A reliable support system should be able to recognize when the available evidence is insufficient, when a request is risky, and when it should gracefully step back.
+
+Therefore, this project explicitly avoids the "Ticket → AI → Answer" paradigm. Instead, it frames the problem around *evidence*. If the evidence is strong and the risk is low, the system replies. If the request is high-risk, ambiguous, unsupported, or low-confidence, the system escalates the ticket to a human agent.
+
+## Why Deterministic Triage?
+
+To achieve this level of safety, the system relies on determinism rather than free-form generation. The core philosophy is **Determinism + Safety + Explainability**. 
+
+The current system does not train a supervised classification model or use an LLM to generate novel text. Instead, it relies on rule-based classification, TF-IDF retrieval, and extractive response generation grounded strictly in a local support corpus. This approach makes the pipeline predictable, easy to inspect, easy to debug, and highly reproducible—qualities that are essential when building a safety-first baseline.
+
+## System Architecture
+
+To implement this philosophy, the triage agent operates as a sequential engineering pipeline where every step acts as a filter or a safety gate.
+
+<figure className="blog-figure">
+  <img src="/images/support_agent_evaluation.png" alt="Support Triage Agent System Architecture" />
+  <figcaption>Figure 1. The deterministic pipeline from input ticket to final decision.</figcaption>
+</figure>
+
+As illustrated in the architecture, an incoming ticket does not go straight to a knowledge base. It first passes through Classification to determine its domain. Then, a Risk Analysis gate evaluates the request for sensitive patterns. Only if it passes this gate does it proceed to TF-IDF Retrieval. The retrieved documents are subjected to strict Evidence Validation. Finally, a Decision Engine evaluates all signals to output either a Reply (via Response Extraction) or an Escalate action.
+
+## Classification and Risk Analysis
+
+The first stage of the pipeline is deterministic classification. Using rule-based NLP, the system identifies the request type and maps the ticket to its corresponding product domain (HackerRank, Claude, or Visa). While rule-based systems can be sensitive to wording and paraphrases, they provide a transparent, easily debuggable foundation for our baseline.
+
+Once classified, the ticket undergoes a deterministic Risk Analysis. The scanner looks for sensitive or high-risk patterns involving areas such as:
+- Billing and financial issues
+- Security and account access
+- Fraud and service outages
+
+The key design principle here is that risk acts as an absolute safety gate. A high-risk case should never automatically receive an answer simply because a retrieval result exists in the corpus.
+
+## TF-IDF Retrieval and Evidence Validation
+
+For information retrieval, we selected TF-IDF (Term Frequency-Inverse Document Frequency) over more modern dense embeddings. TF-IDF was not chosen because it was the most sophisticated retriever available. It was chosen because the baseline needed to be deterministic, computationally inexpensive, interpretable, and easy to run entirely offline.
+
+The local support corpus is converted into TF-IDF vectors, and incoming tickets are transformed into the same vector space. We then use cosine similarity, constrained by the classified domain, to identify relevant support content.
+
+However, retrieving a document does not automatically mean the system should trust it. This brings us to **Evidence Validation**, one of the most critical stages in the pipeline.
+
+Retrieval asks: *"What information looks relevant?"*
+Validation asks: *"Is this evidence actually strong enough to safely use?"*
+
+To pass validation, the retrieved content must exceed thresholds for TF-IDF cosine similarity and keyword overlap. This explicitly rejects weak or tangentially related retrieval candidates, ensuring the system does not answer a question just because it found a document that shares a few words.
+
+## The Decision Engine
+
+The Decision Engine is the central safety mechanism of the agent. It aggregates the outputs of the risk scanner, the retriever, and the evidence validator to make a final, deterministic choice: **REPLY** or **ESCALATE**.
+
+Escalation can be triggered by multiple conditions:
+- The ticket was flagged as high-risk.
+- The request is ambiguous or unsupported by the domain.
+- The retrieval similarity was too weak.
+- The evidence validation failed.
+- The internal confidence score was too low.
+
+Only when sufficient evidence exists and all safety checks pass does the system automatically reply. In this architecture, escalation is an intentional success condition, not a failure.
+
+## Grounded Response Generation
+
+When the Decision Engine approves a reply, the system still does NOT freely generate an answer using an LLM. Instead, it uses extractive sentence selection. 
+
+The system extracts actionable sentences directly from the validated support documentation. These candidate sentences are evaluated using signals including retrieval similarity and keyword overlap. By remaining strictly grounded in the local support corpus, the system minimizes the risk of unsupported claims and prioritizes factual accuracy over linguistic creativity.
+
+## Evaluation and Benchmarking
+
+To evaluate the system, we tested it against a dataset of 29 tickets encompassing the three domains, including edge cases like ambiguous requests, multi-intent queries, and out-of-scope requests. 
+
+The primary evaluation metric is **Baseline Decision Parity**. This measures how consistently the current pipeline reproduces the verified baseline decisions for these tickets. It is crucial to note that baseline parity is *not* a measure of supervised-learning accuracy or a guarantee of 100% real-world correctness—it simply confirms that the deterministic logic faithfully matches the expected reference behaviors.
+
+<figure className="blog-figure">
+  <img src="/images/support_agent_architecture.png" alt="Evaluation Results and Decision Outcomes" />
+  <figcaption>Figure 2. Decision parity, escalation rates, and confidence distribution.</figcaption>
+</figure>
+
+Our evaluation also included an experimental semantic retrieval benchmark, comparing our TF-IDF baseline against `sentence-transformers/all-MiniLM-L6-v2`. This benchmarking was used to determine whether a more computationally expensive semantic approach actually improved the system's safety and parity enough to justify replacing the deterministic baseline. 
+
+## Engineering Challenges
+
+Building a system that aggressively prevents itself from answering surfaced several interesting challenges.
+
+> [!NOTE]
+> **Separating Retrieval from Validation:** A common mistake is assuming that the top-ranked search result is always the correct answer. Forcing a hard separation between the retrieval stage (finding candidates) and the validation stage (proving their relevance) required careful tuning of cosine similarity and overlap thresholds to prevent false positives.
+
+> [!NOTE]
+> **Balancing Automation with Safety:** Defining exactly when the system is allowed to answer required resisting the urge to optimize for a high reply rate. Tuning the risk gates meant intentionally "failing" to answer tickets that a more aggressive system would have confidently hallucinated an answer for.
+
+> [!NOTE]
+> **Evaluating Without Inflated Claims:** It is tempting to label high baseline parity as "accuracy." The challenge was designing an evaluation framework that measures the system on the decisions it makes—specifically its ability to escalate appropriately—rather than treating every escalation as a missed opportunity.
+
+## Results and Lessons Learned
+
+The evaluation on the 29-ticket dataset demonstrated exactly the conservative behavior we engineered the system to exhibit. 
+
+The system achieved 100% baseline decision parity, meaning there were 0 divergent escalations and 0 divergent replies compared to the verified reference set. 
+
+More importantly, the system recorded an **83% escalation rate** and only a **17% auto-reply rate**. This is by design. The system heavily favors replying *only* when evidence is strong, safely escalating the vast majority of tickets that involve ambiguity, high risk, or weak retrieval. 
+
+The confidence distribution (with a mean score of 0.08 and a maximum of 0.77) reflects these strict internal thresholds. These scores are internal normalized signals derived from retrieval and extraction confidence, not calibrated probabilities of correctness.
+
+In terms of performance, the total pipeline latency for processing all tickets was 6.76 seconds, averaging approximately 233 milliseconds per ticket—demonstrating the speed advantages of a deterministic, offline architecture. 
+
+Ultimately, the most important lesson learned is that more automation is not necessarily better automation. A simple, deterministic baseline that knows when it does not know the answer is infinitely more valuable than a sophisticated model that confidently guesses. Do not replace a working, explainable component with a more complex technique unless the results demonstrate a tangible improvement in safety.
+
+## Looking Ahead
+
+While the current deterministic pipeline provides a robust and safe baseline, it serves as a foundation for future, data-driven enhancements. 
+
+Our roadmap includes moving towards supervised support-ticket classification using a larger, labeled dataset with human-reviewed ground truth. We also plan to explore hybrid lexical and semantic retrieval architectures—combining the exact-match precision of TF-IDF with the semantic understanding of dense embeddings. Finally, integrating learned risk classification, while strictly retaining our deterministic safety gates, will allow the system to scale its triage capabilities without compromising its core philosophy: safety first.
