@@ -1,0 +1,194 @@
+---
+title: "From Deterministic Triage to Advanced RAG: Building a Modular Evidence Engine"
+date: "2026-09-20"
+status: "Published"
+description: "Evolving a deterministic NLP support triage pipeline into a modular Retrieval-Augmented Generation (RAG) architecture for safer, evidence-based automated support."
+version: "V2"
+series: "Support Triage Agent"
+---
+
+*Evolving a deterministic NLP support triage pipeline into a modular Retrieval-Augmented Generation (RAG) architecture for safer, evidence-based automated support.*
+
+## Introduction
+
+Version 1 of the Support Triage Agent successfully demonstrated that automation in a support environment requires safety above all else. By building a deterministic pipeline, V1 could classify incoming tickets, analyze risk, retrieve exact evidence using TF-IDF, and output extractive responses—all without the hallucination risks associated with generative AI.
+
+However, while V1 proved the philosophy of safe automation, its linear architecture reached a limit. To retrieve better evidence from more complex documentation, the system required a more flexible approach than simple lexical matching. 
+
+The goal for Version 2 was not to instantly attach a flashy LLM and call it a day. Instead, the focus was to redesign the retrieval and evidence validation layers into a robust, extensible pipeline. V2 is fundamentally a modular evidence engine—a Retrieval-Augmented Generation (RAG) architecture that focuses heavily on the "Retrieval" and "Augmentation" phases while maintaining the deterministic safety guarantees of its predecessor.
+
+## What V1 Already Solved
+
+The original V1 agent established the baseline for safe triage. It relied on a strict classification and risk analysis step to determine if a ticket could be handled automatically. 
+
+If deemed safe, it used TF-IDF to find the most relevant documentation and generated an extractive response directly quoting the source text. If the risk was high or the domain unsupported, it triggered a deterministic escalation to a human agent. V1 was highly predictable, but its rigid architecture made it difficult to upgrade individual components, such as introducing semantic search or multi-step reasoning.
+
+## Why the Architecture Needed to Change
+
+The linear pipeline of V1 meant that changing how evidence was retrieved or evaluated required rewriting core logic. As the documentation corpus grows, a purely lexical approach (TF-IDF) struggles to match users who describe problems using different terminology than the official docs. 
+
+We needed a system that could rewrite queries, combine different retrieval methods, rerank results, and explicitly grade the quality of the evidence before making a decision. This required a modular architecture where each step—ingestion, retrieval, grounding, and escalation—was isolated and independently verifiable.
+
+## What RAG Means Here
+
+Retrieval-Augmented Generation (RAG) generally refers to systems that retrieve relevant information before producing a response, often via a Generative LLM. 
+
+It is important to clarify that in this V2 project, **RAG means the retrieval and evidence architecture, not the final generative chatbot**. V2 deliberately focuses on building a world-class evidence pipeline. Generative LLMs, FastAPI backends, conversation memory, and frontends are explicitly scoped for a future V3 release. V2 retains the extractive generation from V1 to keep the focus entirely on validating the retrieval improvements.
+
+<figure className="blog-figure">
+  <img src="/images/support-v2-2.png" alt="Modular Evidence Pipeline Architecture" />
+  <figcaption>Figure 1. The V2 Modular Evidence Engine architecture.</figcaption>
+</figure>
+
+## Ingestion and Chunking
+
+A robust retrieval system starts with how documents are processed. In V2, we standardized the ingestion pipeline to handle document loading, markdown cleaning, and chunking.
+
+Current V2 configuration uses:
+- **300-word chunks**
+- **50-word overlap**
+
+Chunking matters because feeding an entire long document into a retrieval model is too coarse and dilutes relevance, while tiny fragments strip away necessary context. The 50-word overlap ensures that context isn't lost if an important concept happens to cross a chunk boundary.
+
+## Query Analysis and Routing
+
+Before retrieving evidence, the system must understand what the user is actually asking. V2 introduces a dedicated query analysis layer comprising a `QueryAnalyzer`, a `QueryRewriter`, and a `RetrievalRouter`.
+
+This layer prepares the raw user ticket for the retrieval engines, extracting keywords and intent. We do not claim this is a sophisticated LLM-based query planner; rather, it is a focused, programmatic transformation step that ensures the downstream retrieval models receive the highest quality search terms.
+
+## Dense Retrieval
+
+To solve the vocabulary mismatch problem of V1, V2 introduces dense semantic retrieval using embeddings. We utilize the `sentence-transformers` library, specifically the `all-MiniLM-L6-v2` model.
+
+Semantic retrieval allows the system to find documentation that is conceptually relevant even if the user uses different words than the official guides. For instance, a user asking about a "broken screen" can be matched to documentation regarding "display hardware failure" based on meaning rather than exact string matching.
+
+## Hybrid Retrieval
+
+Relying entirely on semantic retrieval can sometimes lead to overly broad or "fuzzy" matches, missing highly specific part numbers or error codes where exact lexical matching excels.
+
+To balance this, V2 implements a Hybrid Retrieval strategy. It combines:
+- **TF-IDF:** Strong for lexical and exact terminology behavior.
+- **Dense Retrieval:** Strong for semantic similarity.
+
+The documented default weighting in the repository is **30% TF-IDF and 70% dense**. By fusing the scores, the system benefits from the conceptual flexibility of embeddings while retaining the precision of keyword search.
+
+## Reranking
+
+Retrieval and ranking are distinct problems. The pipeline first retrieves a broad set of candidates, and then a ranking step decides which of those candidates should be prioritized. 
+
+The current V2 implementation uses retrieval-score-based reranking to order the combined results of the hybrid search. While a heavier cross-encoder was considered to improve precision, it was deferred to keep the current architecture manageable.
+
+## Context Filtering
+
+More retrieved text is not always better. Feeding an excessive amount of irrelevant context into the decision engine makes evidence evaluation harder and increases the risk of drawing the wrong conclusion.
+
+The V2 context filter removes duplicate chunks and strictly limits the final context window to a maximum of **3 chunks**. This forces the system to rely only on the highest-signal evidence.
+
+## Grounding
+
+This is arguably the most critical safety upgrade in V2. 
+
+Retrieval models only answer the question: *"What looks relevant?"* 
+Grounding answers the question: *"Do we have enough evidence to actually trust this?"*
+
+The V2 grounding module analyzes the retrieved context and tracks:
+- Evidence availability
+- Evidence relevance
+- Token overlap
+
+Based on this analysis, it assigns one of three statuses to the ticket:
+- **GROUNDED**: The evidence is strong and sufficient.
+- **PARTIAL**: Some relevant information was found, but it is incomplete.
+- **UNGROUNDED**: The retrieved context does not support the query.
+
+This explicit grading step preserves and enhances the safety-first philosophy established in V1.
+
+## Reflection and Bounded Retry
+
+V1 was a single-pass system. If it failed to find good evidence, it gave up immediately. 
+
+V2 introduces a bounded retry mechanism inspired by broader Self-RAG concepts. If the grounding module evaluates the initial retrieval as UNGROUNDED or PARTIAL, the system can trigger a retry loop, adjusting the query and attempting retrieval again. 
+
+Crucially, this is a **bounded** deterministic retry, capped at a maximum of **2 retrieval attempts**. Retrying indefinitely is computationally expensive and unsafe. This bounded reflection allows the system to self-correct a bad initial search without getting stuck in autonomous reasoning loops.
+
+<figure className="blog-figure">
+  <img src="/images/support-v2-3.png" alt="Reflection and Bounded Retry Flow" />
+  <figcaption>Figure 2. The bounded reflection and retry logic based on grounding status.</figcaption>
+</figure>
+
+## Safety and Escalation Redesign
+
+V2 features a centralized `EscalationManager` that evaluates risk, unsupported domains, insufficient retrieval, and grounding problems. 
+
+A major addition is the `PARTIAL_ANSWER_ESCALATE` state. This means the system found some relevant evidence, but the grounding module refused to treat it as sufficient for fully automatic handling. Instead of guessing or failing silently, the system escalates the ticket to a human with the partial context attached, ensuring safety is never compromised.
+
+## Complete V2 Pipeline
+
+The conceptual flow of a ticket through the V2 architecture is as follows:
+
+1. **Ticket** enters the system.
+2. **Query Analysis** refines the search intent.
+3. **Risk Check** halts dangerous requests.
+4. **Retrieval Routing** selects the strategy.
+5. **Retrieval** (Hybrid) pulls candidate chunks.
+6. **Reranking** orders the chunks.
+7. **Context Filtering** limits to the top 3 chunks.
+8. **Extractive Generation** drafts a response.
+9. **Grounding** verifies the evidence.
+10. **Reply / Escalation** makes the final deterministic routing decision.
+
+## Evaluation
+
+To rigorously test V2, the evaluation surface was expanded significantly from the original 29-ticket dataset used in V1 to a **200-ticket dataset**.
+
+It is important to note that the V1 and V2 benchmarks are not directly interchangeable. The V2 evaluation measured **decision parity**—how closely V2 reproduced the verified reference decisions on the expanded dataset. Decision parity is not classification accuracy or a real-world support quality score; it is a measure of architectural consistency against known baselines.
+
+**Verified V2 Results (200 tickets):**
+- Answered: 71
+- Escalated: 128
+- Out of Scope: 1
+- High Risk: 96
+- Retrieval Retries: 33 (Average attempts: 0.68)
+- **Decision Parity: 88.5%**
+- Divergent Replies: 23
+- Total Latency: 36.78 seconds
+
+<figure className="blog-figure">
+  <img src="/images/support-v2-1.png" alt="V2 Evaluation Metrics" />
+  <figcaption>Figure 3. Final evaluation results on the expanded 200-ticket dataset.</figcaption>
+</figure>
+
+## Windows/PyTorch Engineering Problem
+
+Engineering is rarely perfectly smooth, and V2 encountered a significant deployment challenge regarding the dense semantic retrieval path.
+
+During bulk encoding operations on a Windows runtime, the system encountered a native PyTorch access violation. An attempted CPU-forcing fix successfully reduced CUDA probing warnings but failed to eliminate the native crash during large bulk processing tasks. 
+
+As a result, **semantic retrieval is disabled by default in the verified working configuration for Windows**. The current verified execution path on that platform defaults back to TF-IDF mode. This serves as a stark reminder that architectural capabilities on paper do not always translate flawlessly to cross-platform runtime stability.
+
+## Results and Lessons Learned
+
+1. **Better architecture doesn't require immediate generative AI:** We vastly improved the system's reasoning without relying on unpredictable LLM generation.
+2. **Retrieval and validation are different problems:** Finding a document is easy; proving it answers the question safely is hard.
+3. **A top retrieval result should not automatically be trusted:** Grounding must be an explicit, separate step.
+4. **Bounded retries are safer than unbounded self-correction:** A hard cap on reflection loops prevents runaway execution.
+5. **Safety gates survive upgrades:** The core philosophy of deterministic escalation transitioned perfectly into the modular architecture.
+6. **Semantic retrieval adds runtime complexity:** It improves conceptual flexibility but introduces heavy dependencies and platform-specific instability.
+7. **Modular architecture wins:** V2's isolated components make future upgrades drastically simpler than V1's linear pipeline.
+
+## Limitations
+
+- Semantic retrieval is disabled by default on Windows due to the PyTorch native crash.
+- Response generation remains purely extractive, inherited from V1.
+- The system lacks conversation memory or multi-turn capability.
+- There is no frontend interface or FastAPI backend layer.
+- The system does not utilize free-form LLM generation.
+- The expanded dataset still requires broader real-world evaluation.
+
+## Looking Ahead to V3
+
+V2 successfully built the modular evidence engine. The planned scope for Version 3 will finally introduce the generative components:
+- **LLM Generation:** Transitioning from extractive quoting to synthesized, conversational responses based on the grounded evidence.
+- **FastAPI & Frontend:** Building a deployable service layer and user interface.
+- **Conversation Memory:** Allowing multi-turn support interactions.
+- **Cloud Deployment:** Containerizing the application for production-ready deployment.

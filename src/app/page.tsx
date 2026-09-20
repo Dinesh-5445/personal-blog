@@ -25,7 +25,10 @@ export default function Home() {
                 <span>{new Date(blog.date).toLocaleDateString("en-US", { month: "short", year: "numeric" })}</span>
                 <span className="blog-status">{blog.status}</span>
               </div>
-              <h3 className="blog-title">{blog.title}</h3>
+              <h3 className="blog-title">
+                {blog.version && <span style={{ opacity: 0.7, marginRight: "0.5rem" }}>{blog.version} ·</span>}
+                {blog.title}
+              </h3>
             </Link>
           ))}
 
