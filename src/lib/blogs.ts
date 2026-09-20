@@ -10,6 +10,8 @@ export type Blog = {
   date: string;
   status: string;
   content: string;
+  version?: string;
+  series?: string;
 };
 
 export function getSortedBlogsData(): Blog[] {
@@ -31,6 +33,8 @@ export function getSortedBlogsData(): Blog[] {
         title: matterResult.data.title || slug,
         date: matterResult.data.date || '',
         status: matterResult.data.status || 'Published',
+        version: matterResult.data.version || null,
+        series: matterResult.data.series || null,
         content: matterResult.content,
       };
     });
@@ -56,6 +60,8 @@ export function getBlogData(slug: string): Blog | undefined {
     title: matterResult.data.title || slug,
     date: matterResult.data.date || '',
     status: matterResult.data.status || 'Published',
+    version: matterResult.data.version || null,
+    series: matterResult.data.series || null,
     content: matterResult.content,
   };
 }

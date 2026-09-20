@@ -1,0 +1,179 @@
+---
+title: "From Centralized PPO to GraphSAGE MARL: Evolving a Traffic Signal Optimizer"
+date: "2026-09-20"
+status: "Published"
+description: "Evolving the traffic signal optimizer from a centralized PPO baseline to a decentralized MARL architecture using GraphSAGE and parameter sharing in SUMO."
+version: "V2"
+series: "Traffic Signal Optimization"
+---
+
+*Evolving the traffic signal optimizer from a centralized PPO baseline to a decentralized MARL architecture using GraphSAGE and parameter sharing in SUMO.*
+
+## Introduction
+
+Version 1 of this project successfully established a working reinforcement learning pipeline for traffic signal control. It used a centralized Proximal Policy Optimization (PPO) controller that simultaneously managed all five signalized intersections in the simulated network. 
+
+While V1 proved that an RL agent could learn a functional phase-switching policy and outperform a fixed-time schedule, the centralized architecture exposed a fundamental scaling limitation. As the number of intersections increases, the joint action space grows exponentially, making the learning problem less tractable. More importantly, a single monolithic agent observing the entire network does not naturally reflect the physical, spatial structure of urban traffic, where local decisions create downstream consequences.
+
+This realization led to Version 2. V2 asks how to scale the control architecture more naturally by moving away from a centralized bottleneck. This article details the transition to a decentralized, Multi-Agent Reinforcement Learning (MARL) approach augmented with Graph Neural Networks (GNNs) to explicitly model the road topology.
+
+## Understanding the Problem
+
+Traffic signal control is the problem of deciding which conflicting traffic movements at an intersection should receive a green signal and for how long. The primary goal is to minimize queues and waiting times while maximizing vehicle throughput. 
+
+This is not a set of independent control problems. A vehicle released from one signal becomes traffic demand for the next downstream signal. Because of this cascading effect, local decisions have network-wide consequences. If an upstream intersection releases a large platoon of vehicles into a downstream intersection that is already congested, it can trigger gridlock. Therefore, an intelligent traffic signal must consider not only its local queues but also the state of its neighbors.
+
+## Why Multi-Agent Reinforcement Learning?
+
+To address the limitations of the V1 centralized controller, the system was reformulated as a multi-agent problem. 
+
+The simulated environment consists of a 3×3 urban road network containing nine total intersections. Five of these are signalized and controlled by RL agents (A1, B0, B1, B2, C1). The remaining four (A0, A2, C0, C2) are priority/boundary intersections outside the RL agent set, acting as traffic sources and sinks.
+
+Instead of one agent controlling all five signalized intersections, each intersection becomes its own agent. Every agent observes its local traffic state, makes its own local phase decision, and acts simultaneously with the other agents. They still interact through the same shared traffic network, but the control architecture is decentralized.
+
+## Why Parameter Sharing?
+
+Although there are five separate agents, they do not use five completely independent neural networks. All five agents share the exact same model parameters. 
+
+This design choice was made for several reasons:
+- **Parameter efficiency**: It significantly reduces the total number of parameters to learn.
+- **Shared experience**: One policy can learn from the diverse experiences gathered across all five intersections simultaneously, improving sample efficiency.
+- **Scalability**: The same trained model can theoretically be deployed to new, homogeneous intersections without retraining from scratch.
+
+However, parameter sharing introduces a tradeoff: it assumes the intersections are sufficiently similar. In this network, node B1 is a four-way junction, while the others (A1, B0, B2, C1) are T-junctions. The policy must learn to generalize across these slight geometric differences. 
+
+## Why Represent the Road Network as a Graph?
+
+A road network is fundamentally spatial; it has a topology. For example, intersection A1 is physically connected to B1. 
+
+If an agent only receives a flat vector of its own local features, it has no explicit knowledge of what is happening at neighboring intersections. It cannot see the platoon of vehicles approaching from upstream.
+
+By representing the network as a graph, where nodes are intersections and edges are the physical road connections, we provide the architecture with structural context. If an upstream intersection is building a large queue that feeds directly into my intersection, knowing that information allows my local agent to proactively adjust its green time. The graph allows information from neighboring intersections to influence the representation used by an agent.
+
+## Why GraphSAGE?
+
+To process this graph structure, we use Graph Neural Networks (GNNs), and specifically GraphSAGE. 
+
+The architecture consists of:
+- 9 input features per node (four queue lengths, four waiting times, and the current phase).
+- A GraphSAGE layer followed by a ReLU activation.
+- A second GraphSAGE layer followed by a ReLU activation.
+- A final 64-dimensional node embedding.
+
+<figure className="blog-figure">
+  <img src="/images/traffic-v2-1.png" alt="GraphSAGE Architecture for Traffic MARL" />
+  <figcaption>Figure 1. The parameter-shared MARL architecture using GraphSAGE for spatial feature aggregation.</figcaption>
+</figure>
+
+GraphSAGE was selected as an engineering choice because it uses local neighborhood sampling and mean aggregation, making it highly suitable for inductive learning on graph structures. It avoids the global adjacency matrix requirements of GCNs, providing a scalable way to aggregate neighboring traffic states into a rich 64-dimensional embedding for each intersection.
+
+## Why PPO?
+
+The shared policy is optimized using Proximal Policy Optimization (PPO). 
+
+In reinforcement learning, the policy learns through trial-and-error. However, a wildly changing control policy can severely destabilize a traffic simulation, leading to catastrophic gridlock from which the agent learns very little. PPO is designed to constrain policy updates, ensuring that one update step does not alter the agent's behavior too aggressively. 
+
+This stability is critical for continuous simulation environments. While PPO was chosen for its reliability as a strong baseline, we did not perform empirical ablations against A2C or DQN to prove it is the absolute optimal algorithm for this specific task.
+
+## How SUMO and PettingZoo Fit Together
+
+Real traffic infrastructure cannot be used as an uncontrolled training environment. We require a simulation engine that accurately models vehicle dynamics and signal logic. 
+
+We use Eclipse SUMO, a microscopic traffic simulator that tracks individual vehicles, queue lengths, and waiting times. The Python interface `libsumo` provides fast, direct access to the simulation state.
+
+To support multiple agents acting concurrently, we wrapped the SUMO environment using the PettingZoo `ParallelEnv` API. At each step, all five agents receive their local observations, compute their actions through the shared GraphSAGE and PPO networks, and simultaneously push their phase decisions back into the SUMO simulation.
+
+<figure className="blog-figure">
+  <img src="/images/traffic-v2-2.png" alt="Multi-Agent Environment Step Logic" />
+  <figcaption>Figure 2. The PettingZoo environment orchestrating concurrent actions and safety constraints.</figcaption>
+</figure>
+
+## Observation and Action Design
+
+Each agent receives a 9-dimensional local observation vector, normalized to stabilize training:
+- 4 features for the number of halted vehicles (queue length) on the North, South, East, and West incoming edges.
+- 4 features for the accumulated waiting time on those same edges.
+- 1 feature representing the current active phase.
+
+The action space is `Discrete(2)`. The agent chooses between extending the North/South phase or the East/West phase. 
+
+## Safety-Constrained Signal Execution
+
+An RL policy must not be allowed to produce physically unrealistic or dangerous signal switching, such as flickering a light every second. The environment translates the agent's high-level phase choice into safe signal behavior using strict constraints:
+
+- **Minimum green lock:** An active green phase must hold for at least 10 seconds before it can be switched.
+- **Maximum green ceiling:** A green phase is forcibly switched if it reaches 60 seconds to prevent starving other directions.
+- **Yellow transition:** When an agent commands a phase switch, the environment executes a mandatory 3-second yellow clearance phase before activating the new green phase.
+
+If no switch is required, the environment steps forward by 5 SUMO seconds. 
+
+## Reward Design
+
+Designing a reward function for traffic is notoriously difficult because local objectives often conflict with global throughput. 
+
+The V2 implementation uses a multi-objective reward function containing:
+- A penalty for queue lengths.
+- A penalty for accumulated waiting time.
+- A positive reward for vehicle throughput.
+- A small penalty for unnecessary phase switching.
+- A heavy penalty for vehicle teleportation (a SUMO mechanism for resolving gridlock).
+- A cooperative term that incorporates the rewards of neighboring intersections.
+
+One objective alone is insufficient; reducing a local queue can easily push the bottleneck downstream. The cooperative term explicitly encourages the agents to prioritize network-level flow over greedy local optimization.
+
+## Engineering Problems and Fixes
+
+Building V2 exposed critical engineering challenges that had to be addressed to ensure a valid evaluation.
+
+**Adaptive Signal Timing Issue:** 
+During development, the V2 environment initially appeared to behave like a fixed-duration controller despite the RL agent's commands. We discovered that SUMO's internal phase timing logic was interacting poorly with our environment wrapper. Repeated identical actions from the agent did not necessarily reset the internal phase timer as expected, forcing unintended fixed-interval switches. The environment was corrected to ensure the RL controller genuinely governs the phase duration, restoring true adaptive behavior.
+
+**Throughput Instrumentation:** 
+Before the final benchmark, we identified and corrected an instrumentation error in how throughput was being measured during the yellow transition phases. Accurate simulation instrumentation is just as important as the learning algorithm itself; failing to count vehicles correctly fundamentally alters the validity of the benchmark.
+
+## Final Benchmark
+
+The final evaluation benchmarked three controllers across six synthetic traffic demand scenarios (balanced, ns_heavy, ew_heavy, rush_hour, congested, and random). The benchmark ran 10 seeds per scenario for each controller, totaling 180 episodes, with a 1200-second simulation horizon and matched seeds for fairness.
+
+The controllers evaluated were:
+1. **Fixed-Time:** A standard static phase schedule.
+2. **Constrained Random:** A random policy that is bound by the exact same safety constraints (minimum/maximum green times) as the RL environment.
+3. **RL MARL + GraphSAGE:** The V2 parameter-shared policy.
+
+<figure className="blog-figure">
+  <img src="/images/traffic-v2-3.png" alt="Final Benchmark Results across Scenarios" />
+  <figcaption>Figure 3. Performance comparison across the six traffic scenarios.</figcaption>
+</figure>
+
+**The Results:**
+The V2 RL controller demonstrated consistent improvements over the Fixed-Time controller across the tested scenarios:
+- **Queue improvement:** Roughly 14–23% reduction compared to Fixed-Time.
+- **Waiting-time improvement:** Roughly 52–61% reduction compared to Fixed-Time.
+- **Throughput improvement:** Roughly 38–45% increase compared to Fixed-Time.
+
+**The Random Baseline Reality Check:**
+It is crucial to discuss the constrained Random baseline. Because it operates within the same intelligent safety bounds (10s minimum, 60s maximum green), the Random controller was surprisingly competitive. In fact, Random frequently achieved lower mean queue and waiting time metrics than the RL policy, though the RL policy achieved marginally higher overall throughput. 
+
+This is a vital scientific lesson: a working RL pipeline that beats a naive static baseline is not necessarily learning an optimal policy if a constrained random walk can achieve similar queue reductions. 
+
+## Results and Lessons Learned
+
+1. **Architecture matters more than the model:** Shifting from a centralized bottleneck to a decentralized graph representation solved the V1 action-space scaling issue.
+2. **Traffic is inherently spatial:** Local decisions create downstream consequences, making spatial feature aggregation (like GraphSAGE) highly relevant.
+3. **Parameter sharing assumes homogeneity:** It is a powerful tool, but it inherently assumes the intersections can be governed by identical logic.
+4. **Reward design shapes behavior:** The policy will learn exactly what you incentivize, which is not always what you actually want.
+5. **Baselines keep you honest:** The competitiveness of the constrained random controller proved that the safety constraints themselves were doing a significant amount of the heavy lifting in preventing gridlock.
+
+## Limitations
+
+The current V2 system has several documented limitations:
+- It was trained and evaluated on one small 3×3 topology using synthetic traffic scenarios.
+- It has not been validated on real-world traffic data.
+- We did not perform a formal ablation comparing GraphSAGE directly against a flat MLP, nor did we benchmark PPO against A2C or DQN.
+- The available training logs do not establish formal convergence to an optimum.
+- The simulation-to-reality gap remains; policies trained in SUMO do not guarantee equivalent real-world performance.
+- The policy was trained with a longer maximum horizon than the 1200-second benchmark horizon.
+
+## Looking Ahead
+
+A logical next iteration of this project would focus on addressing these limitations. Future work should investigate longer training regimes to establish definitive convergence, broader topology generalization tests to see if the parameter-shared policy can control a completely unseen city grid, and stronger optimization-based baselines (such as Max-Pressure) to provide a more rigorous benchmark than fixed-time control.
